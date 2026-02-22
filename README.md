@@ -1,6 +1,7 @@
 # Snake AI — PPO 강화학습 에이전트
 
 Snake 게임을 스스로 학습하는 강화학습 AI입니다.
+
 Stable-Baselines 등 외부 RL 라이브러리 없이 PPO 알고리즘을 직접 구성했습니다.
 
 ![학습 그래프](plots/training_progress.png)
