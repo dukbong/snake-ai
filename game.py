@@ -77,9 +77,6 @@ class SnakeGameAI:
                     pygame.quit()
                     quit()
 
-        # 이동 전 head→food Manhattan distance 저장
-        dist_before = abs(self.head.x - self.food.x) + abs(self.head.y - self.food.y)
-
         self._move(action)
         self.snake.insert(0, self.head)
 
@@ -98,12 +95,6 @@ class SnakeGameAI:
             self._place_food()
         else:
             self.snake.pop()
-            # 이동 후 거리 비교하여 방향성 보상 부여
-            dist_after = abs(self.head.x - self.food.x) + abs(self.head.y - self.food.y)
-            if dist_after < dist_before:
-                reward = 0.1
-            else:
-                reward = -0.1
 
         if self.render:
             self._update_ui()

@@ -138,16 +138,19 @@ class PPOAgent:
             actions, log_probs, _, values = self.model.get_action_and_value(states_tensor)
         return actions.numpy(), log_probs.numpy(), values.numpy()
 
-    def update(self, last_values, last_dones):
+    def update(self, last_values, last_dones, entropy_coeff=None):
         """GAE 계산 후 PPO 업데이트 수행.
 
         Args:
             last_values: (n_envs,) float32 — rollout 마지막 상태의 가치
             last_dones:  (n_envs,) bool   — rollout 마지막 스텝의 done 플래그
+            entropy_coeff: float — 현재 entropy coefficient (None이면 self.entropy_coeff 사용)
 
         Returns:
             metrics dict: policy_loss, value_loss, entropy, approx_kl
         """
+        if entropy_coeff is None:
+            entropy_coeff = self.entropy_coeff
         self.buffer.compute_gae(last_values, last_dones, self.gamma, self.gae_lambda)
 
         metrics = {'policy_loss': [], 'value_loss': [], 'entropy': [], 'approx_kl': []}
@@ -176,7 +179,7 @@ class PPOAgent:
                 # Entropy bonus (음수: 최대화)
                 entropy_loss = -entropy.mean()
 
-                total_loss = policy_loss + self.value_coeff * value_loss + self.entropy_coeff * entropy_loss
+                total_loss = policy_loss + self.value_coeff * value_loss + entropy_coeff * entropy_loss
 
                 self.optimizer.zero_grad()
                 total_loss.backward()

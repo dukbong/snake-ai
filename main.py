@@ -21,8 +21,10 @@ def train():
                         help='총 학습 스텝 (기본: 3,000,000)')
     parser.add_argument('--lr', type=float, default=1e-4,
                         help='기본 학습률 (기본: 1e-4)')
-    parser.add_argument('--entropy-coeff', type=float, default=0.08,
-                        help='엔트로피 계수 (기본: 0.08)')
+    parser.add_argument('--entropy-coeff', type=float, default=0.05,
+                        help='엔트로피 계수 시작값 (기본: 0.05)')
+    parser.add_argument('--entropy-coeff-end', type=float, default=0.01,
+                        help='엔트로피 계수 최종값 (기본: 0.01)')
     parser.add_argument('--reset-steps', action='store_true',
                         help='스텝 카운터 초기화 후 LR annealing 재시작')
     parser.add_argument('--no-multiprocess', action='store_true',
@@ -71,11 +73,12 @@ def train():
         for update_idx in range(start_update, num_updates):
             new_record = False
 
-            # 1. LR ANNEALING: linear decay
+            # 1. LR & ENTROPY ANNEALING: linear decay
             frac = 1.0 - update_idx / num_updates
             lr_now = agent.lr * frac
             for param_group in agent.optimizer.param_groups:
                 param_group['lr'] = lr_now
+            ent_coeff_now = args.entropy_coeff * frac + args.entropy_coeff_end * (1 - frac)
 
             # 2. ROLLOUT 수집
             for step in range(n_steps):
@@ -117,7 +120,7 @@ def train():
             last_dones = dones
 
             # 4. UPDATE
-            metrics = agent.update(last_values, last_dones)
+            metrics = agent.update(last_values, last_dones, entropy_coeff=ent_coeff_now)
 
             # 5. LOGGING (10 업데이트마다)
             if (update_idx + 1) % 10 == 0 and episode_scores:
@@ -136,7 +139,8 @@ def train():
                     f"value: {metrics['value_loss']:.4f} | "
                     f"ent: {metrics['entropy']:.4f} | "
                     f"KL: {metrics['approx_kl']:.4f} | "
-                    f"lr: {lr_now:.2e}"
+                    f"lr: {lr_now:.2e} | "
+                    f"ent_c: {ent_coeff_now:.4f}"
                 )
                 plot(plot_scores, plot_mean_scores)
 

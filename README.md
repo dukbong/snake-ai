@@ -12,10 +12,10 @@ Stable-Baselines 등 외부 RL 라이브러리 없이 PPO 알고리즘을 구성
 
 | 항목 | 값 |
 |------|-----|
-| 최고 점수 | **64** |
-| 최근 20게임 평균 | **28 ~ 31** |
-| 총 학습 스텝 | **8,800,000+** |
-| 총 학습 게임 수 | **37,000+** |
+| 최고 점수 | **104** |
+| 최근 20게임 평균 | **~50** |
+| 총 학습 스텝 | **14,800,000+** |
+| 총 학습 게임 수 | **50,000+** |
 
 ---
 
@@ -42,9 +42,9 @@ Stable-Baselines 등 외부 RL 라이브러리 없이 PPO 알고리즘을 구성
 
 - **Clipped Surrogate Objective**: `clip_epsilon=0.2`로 정책 업데이트 크기를 제한해 학습 안정성 확보
 - **GAE** (Generalized Advantage Estimation): `λ=0.95`로 편향-분산 균형 조절
-- **Entropy Bonus**: `entropy_coeff=0.08`로 탐험 유지
+- **Entropy Bonus**: `entropy_coeff=0.05→0.01` 선형 감소로 탐험-활용 균형 조절
 - **done / truncated 분리**: 타임아웃과 실제 충돌 종료를 구분해 GAE 계산 오류 방지
-- **LR Linear Annealing**: 학습 진행에 따라 학습률 선형 감소
+- **LR & Entropy Linear Annealing**: 학습 진행에 따라 학습률과 엔트로피 계수 선형 감소
 
 ### CNN Actor-Critic 네트워크
 
@@ -87,7 +87,9 @@ Conv2d(7→32) → MaxPool → Conv2d(32→64) → MaxPool → FC(256)
 |---------|------|---------|------|
 | 1차 (3M 스텝) | PPO, n_steps=128 | 39 | ~15 |
 | 2차 (3M 스텝) | reset-steps | 56 | ~26 |
-| 3차 (3M 스텝) | reset-steps, n_steps=256 | **64** | **~30** |
+| 3차 (3M 스텝) | reset-steps, n_steps=256 | 64 | ~30 |
+| 4차 (3M 스텝) | reset-steps, entropy annealing 도입 | 87 | ~35 |
+| 5차 (3M 스텝) | reset-steps | **104** | **~50** |
 
 ---
 
@@ -127,7 +129,8 @@ python main.py --no-multiprocess
 | `--n-steps` | 128 | rollout 길이 |
 | `--total-timesteps` | 3,000,000 | 총 학습 스텝 |
 | `--lr` | 1e-4 | 학습률 |
-| `--entropy-coeff` | 0.08 | 엔트로피 계수 |
+| `--entropy-coeff` | 0.05 | 엔트로피 계수 시작값 |
+| `--entropy-coeff-end` | 0.01 | 엔트로피 계수 최종값 |
 
 ---
 
