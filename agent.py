@@ -11,12 +11,13 @@ class RolloutBuffer:
     상태는 메모리 절약을 위해 uint8로 저장하고, 모델 입력 시점에만 float32로 변환한다.
     """
 
-    def __init__(self, n_steps, n_envs):
+    def __init__(self, n_steps, n_envs, obs_shape=(7, 24, 32)):
         self.n_steps = n_steps
         self.n_envs = n_envs
+        self.obs_shape = obs_shape
 
         # 사전 할당
-        self.states = np.zeros((n_steps, n_envs, 7, 24, 32), dtype=np.uint8)
+        self.states = np.zeros((n_steps, n_envs, *obs_shape), dtype=np.uint8)
         self.actions = np.zeros((n_steps, n_envs), dtype=np.int64)
         self.log_probs = np.zeros((n_steps, n_envs), dtype=np.float32)
         self.rewards = np.zeros((n_steps, n_envs), dtype=np.float32)
@@ -26,6 +27,20 @@ class RolloutBuffer:
         # truncated 스텝의 V(s_terminal), 나머지는 0
         self.terminal_values = np.zeros((n_steps, n_envs), dtype=np.float32)
 
+        self.advantages = None
+        self.returns = None
+
+    def reallocate(self, obs_shape):
+        """커리큘럼 승급 시 obs_shape 변경에 따른 버퍼 재할당."""
+        self.obs_shape = obs_shape
+        self.states = np.zeros((self.n_steps, self.n_envs, *obs_shape), dtype=np.uint8)
+        self.actions = np.zeros((self.n_steps, self.n_envs), dtype=np.int64)
+        self.log_probs = np.zeros((self.n_steps, self.n_envs), dtype=np.float32)
+        self.rewards = np.zeros((self.n_steps, self.n_envs), dtype=np.float32)
+        self.values = np.zeros((self.n_steps, self.n_envs), dtype=np.float32)
+        self.dones = np.zeros((self.n_steps, self.n_envs), dtype=bool)
+        self.truncateds = np.zeros((self.n_steps, self.n_envs), dtype=bool)
+        self.terminal_values = np.zeros((self.n_steps, self.n_envs), dtype=np.float32)
         self.advantages = None
         self.returns = None
 
@@ -77,7 +92,7 @@ class RolloutBuffer:
         total = self.n_steps * self.n_envs
         indices = np.random.permutation(total)
 
-        states_flat = self.states.reshape(total, 7, 24, 32)
+        states_flat = self.states.reshape(total, *self.obs_shape)
         actions_flat = self.actions.reshape(total)
         log_probs_flat = self.log_probs.reshape(total)
         advantages_flat = self.advantages.reshape(total)
@@ -99,17 +114,20 @@ class PPOAgent:
 
     def __init__(
         self,
-        n_envs=8,
-        n_steps=128,
-        n_epochs=4,
-        batch_size=256,
+        n_envs=32,
+        n_steps=256,
+        n_epochs=3,
+        batch_size=1024,
         gamma=0.99,
         gae_lambda=0.95,
         clip_epsilon=0.2,
         value_coeff=0.5,
         entropy_coeff=0.05,
         lr=3e-4,
-        max_grad_norm=0.5,
+        max_grad_norm=1.0,
+        in_channels=7,
+        obs_shape=(7, 24, 32),
+        device=None,
     ):
         self.n_envs = n_envs
         self.n_steps = n_steps
@@ -127,41 +145,55 @@ class PPOAgent:
         self.record = 0
         self.total_steps = 0
 
-        self.model = ActorCritic()
+        # Device 설정: CUDA > MPS > CPU
+        if device is None:
+            if torch.cuda.is_available():
+                self.device = torch.device("cuda")
+            elif torch.backends.mps.is_available():
+                self.device = torch.device("mps")
+            else:
+                self.device = torch.device("cpu")
+        else:
+            self.device = torch.device(device)
+
+        self.model = ActorCritic(in_channels=in_channels).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, eps=1e-5)
-        self.buffer = RolloutBuffer(n_steps, n_envs)
+        self.buffer = RolloutBuffer(n_steps, n_envs, obs_shape=obs_shape)
 
     def get_action(self, states):
         """rollout 수집용. no_grad로 실행."""
-        states_tensor = torch.from_numpy(states)
+        states_tensor = torch.from_numpy(states).to(self.device)
         with torch.no_grad():
             actions, log_probs, _, values = self.model.get_action_and_value(states_tensor)
-        return actions.numpy(), log_probs.numpy(), values.numpy()
+        return actions.cpu().numpy(), log_probs.cpu().numpy(), values.cpu().numpy()
 
-    def update(self, last_values, last_dones, entropy_coeff=None):
+    def update(self, last_values, last_dones, entropy_coeff=None, value_coeff=None):
         """GAE 계산 후 PPO 업데이트 수행.
 
         Args:
             last_values: (n_envs,) float32 — rollout 마지막 상태의 가치
             last_dones:  (n_envs,) bool   — rollout 마지막 스텝의 done 플래그
             entropy_coeff: float — 현재 entropy coefficient (None이면 self.entropy_coeff 사용)
+            value_coeff: float — 현재 value coefficient (None이면 self.value_coeff 사용)
 
         Returns:
             metrics dict: policy_loss, value_loss, entropy, approx_kl
         """
         if entropy_coeff is None:
             entropy_coeff = self.entropy_coeff
+        if value_coeff is None:
+            value_coeff = self.value_coeff
         self.buffer.compute_gae(last_values, last_dones, self.gamma, self.gae_lambda)
 
         metrics = {'policy_loss': [], 'value_loss': [], 'entropy': [], 'approx_kl': []}
 
         for _ in range(self.n_epochs):
             for states, actions, old_log_probs, advantages, returns in self.buffer.get_batches(self.batch_size):
-                states_t = torch.from_numpy(states)
-                actions_t = torch.from_numpy(actions)
-                old_log_probs_t = torch.from_numpy(old_log_probs)
-                advantages_t = torch.from_numpy(advantages)
-                returns_t = torch.from_numpy(returns)
+                states_t = torch.from_numpy(states).to(self.device)
+                actions_t = torch.from_numpy(actions).to(self.device)
+                old_log_probs_t = torch.from_numpy(old_log_probs).to(self.device)
+                advantages_t = torch.from_numpy(advantages).to(self.device)
+                returns_t = torch.from_numpy(returns).to(self.device)
 
                 _, new_log_probs, entropy, new_values = self.model.get_action_and_value(states_t, actions_t)
 
@@ -179,7 +211,7 @@ class PPOAgent:
                 # Entropy bonus (음수: 최대화)
                 entropy_loss = -entropy.mean()
 
-                total_loss = policy_loss + self.value_coeff * value_loss + entropy_coeff * entropy_loss
+                total_loss = policy_loss + value_coeff * value_loss + entropy_coeff * entropy_loss
 
                 self.optimizer.zero_grad()
                 total_loss.backward()
@@ -197,25 +229,28 @@ class PPOAgent:
 
         return {k: np.mean(v) for k, v in metrics.items()}
 
-    def save_checkpoint(self, file_name='model_ppo.pth'):
+    def save_checkpoint(self, file_name='model_ppo.pth', extra=None):
         model_folder_path = './model'
         os.makedirs(model_folder_path, exist_ok=True)
         path = os.path.join(model_folder_path, file_name)
-        torch.save({
+        data = {
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'n_games': self.n_games,
             'record': self.record,
-            'total_steps': self.total_steps,  # LR annealing 연속성 보장
-        }, path)
+            'total_steps': self.total_steps,
+        }
+        if extra:
+            data.update(extra)
+        torch.save(data, path)
         print(f'모델 저장 완료: {path} (게임 {self.n_games}회, 최고기록 {self.record}, 총 스텝 {self.total_steps})')
 
     def load_checkpoint(self, file_name='model_ppo.pth'):
         path = os.path.join('./model', file_name)
         if not os.path.exists(path):
-            return False
+            return None
         try:
-            checkpoint = torch.load(path, weights_only=True)
+            checkpoint = torch.load(path, weights_only=True, map_location=self.device)
             self.model.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             self.n_games = checkpoint.get('n_games', 0)
@@ -223,6 +258,6 @@ class PPOAgent:
             self.total_steps = checkpoint.get('total_steps', 0)
         except (RuntimeError, KeyError):
             print(f'체크포인트 아키텍처 불일치, 새로 학습 시작: {path}')
-            return False
+            return None
         print(f'이어서 학습: {path} (게임 {self.n_games}회, 최고기록 {self.record}, 총 스텝 {self.total_steps})')
-        return True
+        return checkpoint

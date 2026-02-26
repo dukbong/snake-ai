@@ -61,6 +61,9 @@ class SnakeGameAI:
         self.frame_iteration = 0
 
     def _place_food(self):
+        if len(self.snake) >= (self.w // BLOCK_SIZE) * (self.h // BLOCK_SIZE):
+            self.food = None
+            return
         while True:
             x = random.randint(0, (self.w - BLOCK_SIZE) // BLOCK_SIZE) * BLOCK_SIZE
             y = random.randint(0, (self.h - BLOCK_SIZE) // BLOCK_SIZE) * BLOCK_SIZE
@@ -93,6 +96,11 @@ class SnakeGameAI:
             self.score += 1
             reward = 10
             self._place_food()
+            if self.food is None:  # 클리어!
+                if self.render:
+                    self._update_ui()
+                    self.clock.tick(SPEED)
+                return reward, True, False, self.score
         else:
             self.snake.pop()
 
@@ -118,7 +126,8 @@ class SnakeGameAI:
             pygame.draw.rect(self.display, BLUE1, pygame.Rect(pt.x, pt.y, BLOCK_SIZE, BLOCK_SIZE))
             pygame.draw.rect(self.display, BLUE2, pygame.Rect(pt.x + 4, pt.y + 4, 12, 12))
 
-        pygame.draw.rect(self.display, RED, pygame.Rect(self.food.x, self.food.y, BLOCK_SIZE, BLOCK_SIZE))
+        if self.food is not None:
+            pygame.draw.rect(self.display, RED, pygame.Rect(self.food.x, self.food.y, BLOCK_SIZE, BLOCK_SIZE))
 
         text = _font.render(f'Score: {self.score}', True, WHITE)
         self.display.blit(text, [0, 0])
@@ -158,32 +167,40 @@ class SnakeGameAI:
         cols = self.w // BLOCK_SIZE  # 32
         grid = np.zeros((7, rows, cols), dtype=np.uint8)
 
-        # 채널 0: 몸통 (머리 제외) — numpy fancy indexing
+        # 채널 0: 몸통 gradient (목=255 위험, 꼬리=1 곧 사라짐)
         if len(self.snake) > 1:
-            pts = np.array([(p.y // BLOCK_SIZE, p.x // BLOCK_SIZE) for p in self.snake[1:]])
+            body = self.snake[1:]
+            n_body = len(body)
+            pts = np.array([(p.y // BLOCK_SIZE, p.x // BLOCK_SIZE) for p in body])
             valid = (pts[:, 0] >= 0) & (pts[:, 0] < rows) & (pts[:, 1] >= 0) & (pts[:, 1] < cols)
-            grid[0, pts[valid, 0], pts[valid, 1]] = 1
+            if n_body == 1:
+                values = np.array([255], dtype=np.uint8)
+            else:
+                indices = np.arange(n_body, dtype=np.float32)
+                values = 255 - np.round(254.0 * indices / (n_body - 1)).astype(np.uint8)
+            grid[0, pts[valid, 0], pts[valid, 1]] = values[valid]
 
         # 채널 1: 머리
         r = self.head.y // BLOCK_SIZE
         c = self.head.x // BLOCK_SIZE
         if 0 <= r < rows and 0 <= c < cols:
-            grid[1, r, c] = 1
+            grid[1, r, c] = 255
 
         # 채널 2: 먹이
-        r = self.food.y // BLOCK_SIZE
-        c = self.food.x // BLOCK_SIZE
-        if 0 <= r < rows and 0 <= c < cols:
-            grid[2, r, c] = 1
+        if self.food is not None:
+            r = self.food.y // BLOCK_SIZE
+            c = self.food.x // BLOCK_SIZE
+            if 0 <= r < rows and 0 <= c < cols:
+                grid[2, r, c] = 255
 
         # 채널 3~6: 방향 one-hot (RIGHT/LEFT/UP/DOWN), 전체 그리드에 broadcast
         if self.direction == Direction.RIGHT:
-            grid[3, :, :] = 1
+            grid[3, :, :] = 255
         elif self.direction == Direction.LEFT:
-            grid[4, :, :] = 1
+            grid[4, :, :] = 255
         elif self.direction == Direction.UP:
-            grid[5, :, :] = 1
+            grid[5, :, :] = 255
         elif self.direction == Direction.DOWN:
-            grid[6, :, :] = 1
+            grid[6, :, :] = 255
 
         return grid

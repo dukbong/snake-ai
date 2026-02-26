@@ -1,5 +1,5 @@
 import numpy as np
-from game import SnakeGameAI
+from game import SnakeGameAI, BLOCK_SIZE
 
 # action 정수 인덱스 → one-hot 변환
 ACTION_MAP = [
@@ -16,18 +16,24 @@ class VecSnakeEnv:
     렌더링은 첫 번째 환경(i=0)에만 적용된다.
     """
 
-    def __init__(self, n_envs, render=False):
+    def __init__(self, n_envs, render=False, grid_rows=24, grid_cols=32):
         self.n_envs = n_envs
+        self.grid_rows = grid_rows
+        self.grid_cols = grid_cols
         self.envs = []
         for i in range(n_envs):
             env_render = render and (i == 0)
-            self.envs.append(SnakeGameAI(render=env_render))
+            self.envs.append(SnakeGameAI(
+                w=grid_cols * BLOCK_SIZE,
+                h=grid_rows * BLOCK_SIZE,
+                render=env_render,
+            ))
 
     def reset(self):
         """모든 환경을 리셋하고 초기 상태를 반환한다.
 
         Returns:
-            states: (n_envs, 7, 24, 32) uint8
+            states: (n_envs, 7, grid_rows, grid_cols) uint8
         """
         states = []
         for env in self.envs:
@@ -42,7 +48,7 @@ class VecSnakeEnv:
             actions: (n_envs,) int — 정수 인덱스 (0/1/2)
 
         Returns:
-            states:     (n_envs, 7, 24, 32) uint8
+            states:     (n_envs, 7, grid_rows, grid_cols) uint8
             rewards:    (n_envs,) float32 — 보상 정규화 적용 (±10→±1)
             dones:      (n_envs,) bool
             truncateds: (n_envs,) bool
@@ -74,6 +80,23 @@ class VecSnakeEnv:
             states.append(env.get_grid_state())
 
         return np.stack(states, axis=0), rewards, dones, truncateds, infos
+
+    def set_grid_size(self, grid_rows, grid_cols):
+        """커리큘럼 승급 시 그리드 크기 변경. 모든 환경을 재생성한다.
+
+        Returns:
+            states: (n_envs, 7, grid_rows, grid_cols) uint8 — 새 초기 상태
+        """
+        self.grid_rows = grid_rows
+        self.grid_cols = grid_cols
+        for i in range(self.n_envs):
+            env_render = self.envs[i].render
+            self.envs[i] = SnakeGameAI(
+                w=grid_cols * BLOCK_SIZE,
+                h=grid_rows * BLOCK_SIZE,
+                render=env_render,
+            )
+        return self.reset()
 
     def close(self):
         """인터페이스 통일용 no-op (단일 프로세스이므로 정리 불필요)."""

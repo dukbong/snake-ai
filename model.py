@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 def _orthogonal_init(module, gain=1.0):
@@ -9,28 +10,56 @@ def _orthogonal_init(module, gain=1.0):
             nn.init.zeros_(module.bias)
 
 
-class ActorCritic(nn.Module):
-    def __init__(self):
+class ResBlock(nn.Module):
+    """Residual block + GroupNorm (RL에서 BN 불안정 방지)"""
+
+    def __init__(self, channels):
         super().__init__()
-        # 공유 backbone (7채널 입력)
-        # 24×32 → 12×16
-        self.conv1 = nn.Conv2d(7, 32, kernel_size=3, padding=1)
-        self.pool1 = nn.MaxPool2d(2)
-        # 12×16 → 6×8
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.pool2 = nn.MaxPool2d(2)
-        # 64 * 6 * 8 = 3072
-        self.fc_shared = nn.Linear(3072, 256)
+        self.gn1 = nn.GroupNorm(8, channels)
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.gn2 = nn.GroupNorm(8, channels)
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
 
-        # Policy head (Actor) — 3개 action에 대한 logits
-        self.fc_policy = nn.Linear(256, 3)
-
-        # Value head (Critic) — 상태 가치 스칼라
-        self.fc_value = nn.Linear(256, 1)
-
-        # Orthogonal 초기화
         _orthogonal_init(self.conv1, gain=(2 ** 0.5))
         _orthogonal_init(self.conv2, gain=(2 ** 0.5))
+
+    def forward(self, x):
+        residual = x
+        x = F.relu(self.gn1(x))
+        x = self.conv1(x)
+        x = F.relu(self.gn2(x))
+        x = self.conv2(x)
+        return x + residual
+
+
+class ActorCritic(nn.Module):
+    def __init__(self, in_channels=7):
+        super().__init__()
+        # 입력 conv: in_channels → 128
+        self.conv_in = nn.Conv2d(in_channels, 128, 3, padding=1)
+        self.gn_in = nn.GroupNorm(8, 128)
+
+        # 3 Residual Blocks
+        self.res1 = ResBlock(128)
+        self.res2 = ResBlock(128)
+        self.res3 = ResBlock(128)
+
+        # AdaptiveAvgPool2d: 임의 그리드 크기 → 고정 (4, 4)
+        # (4,4)는 모든 커리큘럼 그리드(8,12,16,20,24행 / 8,12,16,24,32열)의 공약수
+        # MPS에서 입력이 출력 크기로 나누어떨어져야 하는 제약을 만족
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((4, 4))
+
+        # Shared FC: 128 * 4 * 4 = 2048
+        self.fc_shared = nn.Linear(2048, 512)
+
+        # Policy head (Actor) — 3개 action에 대한 logits
+        self.fc_policy = nn.Linear(512, 3)
+
+        # Value head (Critic) — 상태 가치 스칼라
+        self.fc_value = nn.Linear(512, 1)
+
+        # Orthogonal 초기화
+        _orthogonal_init(self.conv_in, gain=(2 ** 0.5))
         _orthogonal_init(self.fc_shared, gain=(2 ** 0.5))
         _orthogonal_init(self.fc_policy, gain=0.01)
         _orthogonal_init(self.fc_value, gain=1.0)
@@ -39,10 +68,14 @@ class ActorCritic(nn.Module):
         # uint8 → float32 변환 (호출자가 dtype을 신경 쓸 필요 없음)
         if x.dtype != torch.float32:
             x = x.float()
-        x = self.pool1(torch.relu(self.conv1(x)))
-        x = self.pool2(torch.relu(self.conv2(x)))
+        x = x / 255.0
+        x = F.relu(self.gn_in(self.conv_in(x)))
+        x = self.res1(x)
+        x = self.res2(x)
+        x = self.res3(x)
+        x = self.adaptive_pool(x)
         x = x.view(x.size(0), -1)
-        x = torch.relu(self.fc_shared(x))
+        x = F.relu(self.fc_shared(x))
         return x
 
     def forward(self, x):
