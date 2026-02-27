@@ -44,9 +44,16 @@ class ActorCritic(nn.Module):
         self.res2 = ResBlock(128)
         self.res3 = ResBlock(128)
 
-        # AdaptiveAvgPool2d: 임의 그리드 크기 → 고정 (4, 4)
-        # (4,4)는 모든 커리큘럼 그리드(8,12,16,20,24행 / 8,12,16,24,32열)의 공약수
-        # MPS에서 입력이 출력 크기로 나누어떨어져야 하는 제약을 만족
+        # Downsample: stride-2 conv로 공간 차원을 절반으로 축소
+        # 큰 맵에서 AdaptiveAvgPool의 급격한 압축 방지
+        self.downsample = nn.Sequential(
+            nn.GroupNorm(8, 128),
+            nn.ReLU(),
+            nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1),
+        )
+
+        # AdaptiveAvgPool2d: 다운샘플된 feature map → 고정 (4, 4)
+        # MPS에서 입력이 출력 크기(4)로 나누어떨어져야 하므로 forward에서 패딩 적용
         self.adaptive_pool = nn.AdaptiveAvgPool2d((4, 4))
 
         # Shared FC: 128 * 4 * 4 = 2048
@@ -60,6 +67,7 @@ class ActorCritic(nn.Module):
 
         # Orthogonal 초기화
         _orthogonal_init(self.conv_in, gain=(2 ** 0.5))
+        _orthogonal_init(self.downsample[2], gain=(2 ** 0.5))
         _orthogonal_init(self.fc_shared, gain=(2 ** 0.5))
         _orthogonal_init(self.fc_policy, gain=0.01)
         _orthogonal_init(self.fc_value, gain=1.0)
@@ -72,7 +80,14 @@ class ActorCritic(nn.Module):
         x = F.relu(self.gn_in(self.conv_in(x)))
         x = self.res1(x)
         x = self.res2(x)
+        x = self.downsample(x)
         x = self.res3(x)
+        # MPS 호환: AdaptiveAvgPool2d 입력이 출력 크기(4)로 나누어떨어져야 함
+        h, w = x.shape[2], x.shape[3]
+        pad_h = (4 - h % 4) % 4
+        pad_w = (4 - w % 4) % 4
+        if pad_h > 0 or pad_w > 0:
+            x = F.pad(x, (0, pad_w, 0, pad_h))
         x = self.adaptive_pool(x)
         x = x.view(x.size(0), -1)
         x = F.relu(self.fc_shared(x))
